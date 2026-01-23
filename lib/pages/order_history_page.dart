@@ -98,7 +98,7 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
       // Load ONLY essential fields
       final ordersResponse = await supabase
           .from('orders')
-          .select('id, created_at, order_status, total_amount, payment_method, address_details')
+          .select('id, created_at, order_status, total_amount, payment_method, address_details, pickup_date, pickup_slot_display_time, delivery_date, delivery_slot_display_time')
           .eq('store_user_id', widget.storeUserId)
           .order('created_at', ascending: false)
           .limit(_pageSize);
@@ -146,7 +146,7 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     try {
       final ordersResponse = await supabase
           .from('orders')
-          .select('id, created_at, order_status, total_amount, payment_method, address_details') // UPDATED
+          .select('id, created_at, order_status, total_amount, payment_method, address_details, pickup_date, pickup_slot_display_time, delivery_date, delivery_slot_display_time')
           .eq('store_user_id', widget.storeUserId)
           .order('created_at', ascending: false)
           .range(_currentPage * _pageSize, (_currentPage + 1) * _pageSize - 1);
@@ -260,13 +260,13 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
       final fullOrder = await supabase
           .from('orders')
           .select('''
-          *,
-          order_items!inner (
-            *,
-            products (id, product_name, image_url, product_price, category_id)
-          ),
-          order_billing_details (*)
-        ''')
+      *,
+      order_items!inner (
+        *,
+        products (id, product_name, image_url, product_price, category_id)
+      ),
+      order_billing_details (*)
+    ''')
           .eq('id', orderId)
           .single();
 
@@ -979,11 +979,6 @@ class StoreOrderDetailsSheet extends StatelessWidget {
     return message;
   }
 
-  /// FIND THIS METHOD in your code (search for "Future<void> _sendWhatsApp")
-// It's in the StoreOrderDetailsSheet class around line 570-630
-// REPLACE THE ENTIRE _sendWhatsApp METHOD with this code:
-
-  // REPLACE the _sendWhatsApp method with this FIXED version:
 
   Future<void> _sendWhatsApp(BuildContext context, Map<String, dynamic> order) async {
     try {
@@ -2273,11 +2268,8 @@ Thank you! 🛍️
                           _buildBillingSection(order),
                           const SizedBox(height: 20),
 
-                          if (address != null) ...[
-                            _buildDeliveryAddressSection(context, address),
-                            const SizedBox(height: 20),
-                          ],
-                          if (order['pickup_slot'] != null) ...[
+                          // Pickup Slot Section
+                          if (order['pickup_date'] != null) ...[
                             _buildSection(
                               'Pickup Slot',
                               Icons.schedule,
@@ -2285,13 +2277,15 @@ Thank you! 🛍️
                                 _buildDetailRow('Date', _formatDate(order['pickup_date'])),
                                 _buildDetailRow(
                                   'Time',
-                                  order['pickup_slot']['display_time'] ?? 'N/A',
+                                  order['pickup_slot_display_time']?.toString() ?? 'N/A',
                                 ),
                               ],
                             ),
                             const SizedBox(height: 20),
                           ],
-                          if (order['delivery_slot'] != null) ...[
+
+// Delivery Slot Section
+                          if (order['delivery_date'] != null) ...[
                             _buildSection(
                               'Delivery Slot',
                               Icons.local_shipping,
@@ -2299,12 +2293,12 @@ Thank you! 🛍️
                                 _buildDetailRow('Date', _formatDate(order['delivery_date'])),
                                 _buildDetailRow(
                                   'Time',
-                                  order['delivery_slot']['display_time'] ?? 'N/A',
+                                  order['delivery_slot_display_time']?.toString() ?? 'N/A',
                                 ),
                               ],
                             ),
-                          ],
-                        ],
+                            const SizedBox(height: 20),
+                          ],                      ],
                       ),
                     ),
                   ),
