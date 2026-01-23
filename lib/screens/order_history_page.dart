@@ -11,6 +11,8 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:typed_data';
 import 'dart:async';
 
+import '../widgets/order_skeleton_loader.dart';
+
 
 
 class StoreOrderHistoryPage extends StatefulWidget {
@@ -31,126 +33,75 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
   List<Map<String, dynamic>> allOrders = [];
   bool isLoading = true;
   String? errorMessage;
+  final ScrollController _scrollController = ScrollController();
+  int _currentPage = 0;
+  final int _pageSize = 15;
+  bool isLoadingMore = false;
+  bool hasMore = true;
+  final Map<String, Map<String, dynamic>> _detailsCache = {};
 
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);  // ADD THIS LINE
     _loadOrders();
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent * 0.8) {
+      if (!isLoadingMore && hasMore) {
+        _loadMoreOrders();
+      }
+    }
+  }
+
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadOrders() async {
     setState(() {
       isLoading = true;
       errorMessage = null;
+      _currentPage = 0;
+      allOrders.clear();
     });
 
     try {
+      // Load ONLY essential fields
       final ordersResponse = await supabase
           .from('orders')
-          .select('''
-            *,
-            pickup_slot_display_time,
-            pickup_slot_start_time,
-            pickup_slot_end_time,
-            delivery_slot_display_time,
-            delivery_slot_start_time,
-            delivery_slot_end_time
-          ''')
+          .select('id, created_at, order_status, total_amount, payment_method')
           .eq('store_user_id', widget.storeUserId)
-          .order('created_at', ascending: false);
+          .order('created_at', ascending: false)
+          .limit(_pageSize);
 
-      List<Map<String, dynamic>> ordersWithFullDetails = [];
+      // Get item counts in single query
+      final orderIds = ordersResponse.map((o) => o['id']).toList();
+      final itemCounts = await supabase
+          .from('order_items')
+          .select('order_id')
+          .inFilter('order_id', orderIds);
 
-      for (var order in ordersResponse) {
-        Map<String, dynamic> orderData = Map<String, dynamic>.from(order);
-
-        try {
-          final orderItemsResponse = await supabase
-              .from('order_items')
-              .select('*')
-              .eq('order_id', order['id']);
-
-          List<Map<String, dynamic>> processedItems = [];
-          for (var item in orderItemsResponse) {
-            Map<String, dynamic> processedItem = Map<String, dynamic>.from(item);
-
-            if (item['product_id'] != null) {
-              try {
-                final productResponse = await supabase
-                    .from('products')
-                    .select('id, product_name, image_url, product_price, category_id')
-                    .eq('id', item['product_id'])
-                    .maybeSingle();
-
-                if (productResponse != null) {
-                  processedItem['products'] = {
-                    'id': productResponse['id'],
-                    'name': productResponse['product_name'],
-                    'image_url': item['product_image'] ?? productResponse['image_url'],
-                    'price': productResponse['product_price'],
-                    'category_id': productResponse['category_id'],
-                  };
-                }
-              } catch (e) {
-                processedItem['products'] = {
-                  'id': item['product_id'],
-                  'name': item['product_name'] ?? 'Unknown Product',
-                  'image_url': item['product_image'],
-                  'price': item['product_price'] ?? 0.0,
-                };
-              }
-            }
-            processedItems.add(processedItem);
-          }
-
-          orderData['order_items'] = processedItems;
-          orderData['item_count'] = processedItems.length;
-        } catch (e) {
-          orderData['order_items'] = [];
-          orderData['item_count'] = 0;
-        }
-
-        try {
-          final billingResponse = await supabase
-              .from('order_billing_details')
-              .select('*')
-              .eq('order_id', order['id'])
-              .maybeSingle();
-
-          if (billingResponse != null) {
-            orderData['billing_details'] = billingResponse;
-          }
-        } catch (e) {
-          debugPrint('Error loading billing: $e');
-        }
-
-        if (order['address_details'] != null) {
-          orderData['address_info'] = order['address_details'];
-        }
-
-        if (order['pickup_slot_display_time'] != null) {
-          orderData['pickup_slot'] = {
-            'display_time': order['pickup_slot_display_time'],
-            'start_time': order['pickup_slot_start_time'],
-            'end_time': order['pickup_slot_end_time'],
-          };
-        }
-
-        if (order['delivery_slot_display_time'] != null) {
-          orderData['delivery_slot'] = {
-            'display_time': order['delivery_slot_display_time'],
-            'start_time': order['delivery_slot_start_time'],
-            'end_time': order['delivery_slot_end_time'],
-          };
-        }
-
-        ordersWithFullDetails.add(orderData);
+      final Map<String, int> counts = {};
+      for (var item in itemCounts) {
+        counts[item['order_id'].toString()] = (counts[item['order_id'].toString()] ?? 0) + 1;
       }
 
       if (mounted) {
         setState(() {
-          allOrders = ordersWithFullDetails;
+          allOrders = ordersResponse.map((o) {
+            final order = Map<String, dynamic>.from(o);
+            order['item_count'] = counts[o['id'].toString()] ?? 0;
+            return order;
+          }).toList();
           isLoading = false;
+          hasMore = ordersResponse.length == _pageSize;
+          _currentPage = 1;
         });
       }
     } catch (e) {
@@ -160,6 +111,47 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
           isLoading = false;
         });
       }
+    }
+  }
+
+
+  Future<void> _loadMoreOrders() async {
+    if (isLoadingMore || !hasMore) return;
+    setState(() => isLoadingMore = true);
+
+    try {
+      final ordersResponse = await supabase
+          .from('orders')
+          .select('id, created_at, order_status, total_amount, payment_method')
+          .eq('store_user_id', widget.storeUserId)
+          .order('created_at', ascending: false)
+          .range(_currentPage * _pageSize, (_currentPage + 1) * _pageSize - 1);
+
+      final orderIds = ordersResponse.map((o) => o['id']).toList();
+      final itemCounts = await supabase
+          .from('order_items')
+          .select('order_id')
+          .inFilter('order_id', orderIds);
+
+      final Map<String, int> counts = {};
+      for (var item in itemCounts) {
+        counts[item['order_id'].toString()] = (counts[item['order_id'].toString()] ?? 0) + 1;
+      }
+
+      if (mounted) {
+        setState(() {
+          allOrders.addAll(ordersResponse.map((o) {
+            final order = Map<String, dynamic>.from(o);
+            order['item_count'] = counts[o['id'].toString()] ?? 0;
+            return order;
+          }).toList());
+          isLoadingMore = false;
+          hasMore = ordersResponse.length == _pageSize;
+          _currentPage++;
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => isLoadingMore = false);
     }
   }
 
@@ -191,7 +183,79 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     }
   }
 
-  void _showOrderDetails(Map<String, dynamic> order) {
+  Future<void> _showOrderDetails(Map<String, dynamic> order) async {
+    final orderId = order['id'].toString();
+
+    // Check cache first
+    if (_detailsCache.containsKey(orderId)) {
+      _displayOrderDetails(_detailsCache[orderId]!);
+      return;
+    }
+
+    // Show loading
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => const Center(child: CircularProgressIndicator(color: Colors.white)),
+    );
+
+    try {
+      // Load full details
+      final fullOrder = await supabase
+          .from('orders')
+          .select('''
+          *,
+          order_items!inner (
+            *,
+            products (id, product_name, image_url, product_price, category_id)
+          ),
+          order_billing_details (*)
+        ''')
+          .eq('id', orderId)
+          .single();
+
+      // Process and cache
+      Map<String, dynamic> orderData = Map<String, dynamic>.from(fullOrder);
+
+      if (fullOrder['order_items'] != null) {
+        orderData['order_items'] = (fullOrder['order_items'] as List).map((item) {
+          Map<String, dynamic> processedItem = Map<String, dynamic>.from(item);
+          if (item['products'] != null) {
+            processedItem['products'] = {
+              'id': item['products']['id'],
+              'name': item['products']['product_name'],
+              'image_url': item['product_image'] ?? item['products']['image_url'],
+              'price': item['products']['product_price'],
+              'category_id': item['products']['category_id'],
+            };
+          }
+          return processedItem;
+        }).toList();
+      }
+
+      if (fullOrder['order_billing_details'] != null &&
+          fullOrder['order_billing_details'] is List &&
+          (fullOrder['order_billing_details'] as List).isNotEmpty) {
+        orderData['billing_details'] = (fullOrder['order_billing_details'] as List).first;
+      }
+
+      _detailsCache[orderId] = orderData;
+
+      if (mounted) {
+        Navigator.of(context).pop(); // Close loading
+        _displayOrderDetails(orderData);
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  void _displayOrderDetails(Map<String, dynamic> order) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -205,19 +269,7 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     return Scaffold(
       backgroundColor: Colors.black,
       body: isLoading
-          ? const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(color: Colors.white),
-            SizedBox(height: 16),
-            Text(
-              'Loading orders...',
-              style: TextStyle(color: Colors.white),
-            ),
-          ],
-        ),
-      )
+          ? const OrderSkeletonLoader()
           : errorMessage != null
           ? Center(
         child: Padding(
@@ -282,10 +334,20 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
         color: Colors.white,
         backgroundColor: Colors.black,
         child: ListView.builder(
+          controller: _scrollController,  // ADD THIS LINE
           padding: const EdgeInsets.all(16),
-          itemCount: allOrders.length,
-          itemBuilder: (context, index) =>
-              _buildOrderCard(allOrders[index], index),
+          itemCount: allOrders.length + (isLoadingMore ? 1 : 0),  // CHANGE THIS
+          itemBuilder: (context, index) {
+            if (index == allOrders.length) {  // ADD THESE LINES
+              return const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: CircularProgressIndicator(color: Colors.white),
+                ),
+              );
+            }
+            return _buildOrderCard(allOrders[index], index);
+          },
         ),
       ),
     );
