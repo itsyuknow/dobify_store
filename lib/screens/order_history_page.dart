@@ -673,9 +673,16 @@ class StoreOrderDetailsSheet extends StatelessWidget {
     for (var item in orderItems) {
       final product = item['products'];
       final name = product?['name'] ?? item['product_name'] ?? 'Unknown';
+      final serviceType = item['service_type']?.toString() ?? '';
       final qty = item['quantity'] ?? 1;
       final price = item['total_price'] ?? '0.00';
-      message += '• $name x$qty - ₹$price\n';
+
+      // Add service type in parentheses if available
+      final itemName = serviceType.isNotEmpty && serviceType.toLowerCase() != 'n/a'
+          ? '$name ($serviceType)'
+          : name;
+
+      message += '• $itemName x$qty - ₹$price\n';
     }
 
     message += '\n💰 *Bill Summary:*\n';
