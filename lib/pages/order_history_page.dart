@@ -40,42 +40,65 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
   bool hasMore = true;
   final Map<String, Map<String, dynamic>> _detailsCache = {};
 
+  final TextEditingController _searchController = TextEditingController();
+  bool _isSearching = false;
+  String _searchQuery = '';
+  List<Map<String, dynamic>> filteredOrders = [];
+
   @override
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);  // ADD THIS LINE
     _loadOrders();
+    _searchController.addListener(_onSearchChanged);
   }
 
-  void _onScroll() {
-    if (_scrollController.position.pixels >=
-        _scrollController.position.maxScrollExtent * 0.8) {
-      if (!isLoadingMore && hasMore) {
-        _loadMoreOrders();
+
+  // ADD THIS METHOD: Handle search text changes
+  void _onSearchChanged() {
+    final query = _searchController.text.trim();
+    setState(() {
+      _searchQuery = query;
+      _isSearching = query.isNotEmpty;
+
+      if (query.isEmpty) {
+        filteredOrders = List.from(allOrders);
+      } else {
+        filteredOrders = allOrders.where((order) {
+          final customerName = _getCustomerName(order).toLowerCase();
+          final orderId = order['id']?.toString().toLowerCase() ?? '';
+          return customerName.contains(query.toLowerCase()) ||
+              orderId.contains(query.toLowerCase());
+        }).toList();
       }
-    }
+    });
   }
 
-
-  @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
+// ADD THIS METHOD: Clear search
+  void _clearSearch() {
+    setState(() {
+      _searchController.clear();
+      _searchQuery = '';
+      _isSearching = false;
+      filteredOrders = List.from(allOrders);
+    });
   }
 
+// UPDATE THIS METHOD: Modify _loadOrders to also update filteredOrders
   Future<void> _loadOrders() async {
     setState(() {
       isLoading = true;
       errorMessage = null;
       _currentPage = 0;
       allOrders.clear();
+      filteredOrders.clear(); // ADD THIS LINE
     });
 
     try {
       // Load ONLY essential fields
       final ordersResponse = await supabase
           .from('orders')
-          .select('id, created_at, order_status, total_amount, payment_method')
+          .select('id, created_at, order_status, total_amount, payment_method, address_details')
           .eq('store_user_id', widget.storeUserId)
           .order('created_at', ascending: false)
           .limit(_pageSize);
@@ -99,6 +122,7 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
             order['item_count'] = counts[o['id'].toString()] ?? 0;
             return order;
           }).toList();
+          filteredOrders = List.from(allOrders); // ADD THIS LINE
           isLoading = false;
           hasMore = ordersResponse.length == _pageSize;
           _currentPage = 1;
@@ -114,7 +138,7 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     }
   }
 
-
+// UPDATE THIS METHOD: Modify _loadMoreOrders to also update filteredOrders
   Future<void> _loadMoreOrders() async {
     if (isLoadingMore || !hasMore) return;
     setState(() => isLoadingMore = true);
@@ -122,7 +146,7 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     try {
       final ordersResponse = await supabase
           .from('orders')
-          .select('id, created_at, order_status, total_amount, payment_method')
+          .select('id, created_at, order_status, total_amount, payment_method, address_details') // UPDATED
           .eq('store_user_id', widget.storeUserId)
           .order('created_at', ascending: false)
           .range(_currentPage * _pageSize, (_currentPage + 1) * _pageSize - 1);
@@ -140,11 +164,27 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
 
       if (mounted) {
         setState(() {
-          allOrders.addAll(ordersResponse.map((o) {
+          final newOrders = ordersResponse.map((o) {
             final order = Map<String, dynamic>.from(o);
             order['item_count'] = counts[o['id'].toString()] ?? 0;
             return order;
-          }).toList());
+          }).toList();
+
+          allOrders.addAll(newOrders);
+          // Update filtered orders based on current search
+          if (_searchQuery.isEmpty) {
+            filteredOrders.addAll(newOrders);
+          } else {
+            // Filter the new orders by search query
+            final filteredNewOrders = newOrders.where((order) {
+              final customerName = _getCustomerName(order).toLowerCase();
+              final orderId = order['id']?.toString().toLowerCase() ?? '';
+              return customerName.contains(_searchQuery.toLowerCase()) ||
+                  orderId.contains(_searchQuery.toLowerCase());
+            }).toList();
+            filteredOrders.addAll(filteredNewOrders);
+          }
+
           isLoadingMore = false;
           hasMore = ordersResponse.length == _pageSize;
           _currentPage++;
@@ -153,6 +193,22 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     } catch (e) {
       if (mounted) setState(() => isLoadingMore = false);
     }
+  }
+
+  void _onScroll() {
+    if (_scrollController.position.pixels >=
+        _scrollController.position.maxScrollExtent * 0.8) {
+      if (!isLoadingMore && hasMore) {
+        _loadMoreOrders();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _searchController.dispose(); // ADD THIS LINE
+    super.dispose();
   }
 
   String _formatDate(dynamic dateString) {
@@ -264,6 +320,30 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     );
   }
 
+  String _getCustomerName(Map<String, dynamic> order) {
+    // Check if we have customer name in the order data
+    final Map<String, dynamic>? address = order['address_info'] ?? order['address_details'];
+
+    if (address != null) {
+      // Try to get name from various possible fields
+      final String? name = address['recipient_name']?.toString() ??
+          address['name']?.toString() ??
+          address['customer_name']?.toString();
+
+      if (name != null && name.isNotEmpty) {
+        // Return first name if full name is long
+        if (name.length > 12) {
+          final parts = name.split(' ');
+          return parts.isNotEmpty ? parts[0] : name.substring(0, 10) + '...';
+        }
+        return name;
+      }
+    }
+
+    // Fallback to "Customer" if no name found
+    return 'Customer';
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -302,53 +382,161 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
           ),
         ),
       )
-          : allOrders.isEmpty
-          ? Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.inbox_outlined,
-              size: 64,
-              color: Colors.grey[600],
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'No orders yet',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: Colors.white,
+          : Column(
+        children: [
+          // SEARCH BAR SECTION - ADD THIS
+          // SEARCH BAR SECTION
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.grey[900],
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey[800]!),
+              ),
+              child: Row(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(left: 16),
+                    child: Icon(
+                      Icons.search,
+                      color: Colors.grey[400],
+                      size: 20,
+                    ),
+                  ),
+                  Expanded(
+                    child: TextField(
+                      controller: _searchController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        hintText: 'Search by customer name or order ID...',
+                        hintStyle: TextStyle(color: Colors.grey[500]),
+                        border: InputBorder.none, // This removes all borders
+                        enabledBorder: InputBorder.none, // Remove enabled state border
+                        focusedBorder: InputBorder.none, // Remove focused state border
+                        disabledBorder: InputBorder.none, // Remove disabled state border
+                        errorBorder: InputBorder.none, // Remove error border
+                        focusedErrorBorder: InputBorder.none, // Remove focused error border
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 14,
+                        ),
+                      ),
+                      cursorColor: Colors.white,
+                    ),
+                  ),
+                  if (_isSearching)
+                    IconButton(
+                      onPressed: _clearSearch,
+                      icon: Icon(
+                        Icons.clear,
+                        color: Colors.grey[400],
+                      ),
+                    ),
+                ],
               ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Your order history will appear here',
-              style: TextStyle(color: Colors.grey[600]),
+          ),
+
+          // ORDER COUNT INDICATOR - ADD THIS
+          if (_isSearching)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(
+                children: [
+                  Text(
+                    '${filteredOrders.length} order${filteredOrders.length != 1 ? 's' : ''} found',
+                    style: TextStyle(
+                      color: Colors.grey[500],
+                      fontSize: 12,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (filteredOrders.isEmpty)
+                    TextButton(
+                      onPressed: _clearSearch,
+                      child: Text(
+                        'Clear search',
+                        style: TextStyle(
+                          color: Colors.blue[300],
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
-          ],
-        ),
-      )
-          : RefreshIndicator(
-        onRefresh: _loadOrders,
-        color: Colors.white,
-        backgroundColor: Colors.black,
-        child: ListView.builder(
-          controller: _scrollController,  // ADD THIS LINE
-          padding: const EdgeInsets.all(16),
-          itemCount: allOrders.length + (isLoadingMore ? 1 : 0),  // CHANGE THIS
-          itemBuilder: (context, index) {
-            if (index == allOrders.length) {  // ADD THESE LINES
-              return const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(16),
-                  child: CircularProgressIndicator(color: Colors.white),
-                ),
-              );
-            }
-            return _buildOrderCard(allOrders[index], index);
-          },
-        ),
+
+          // ORDERS LIST
+          Expanded(
+            child: filteredOrders.isEmpty && !isLoading
+                ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    _isSearching
+                        ? Icons.search_off
+                        : Icons.inbox_outlined,
+                    size: 64,
+                    color: Colors.grey[600],
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    _isSearching
+                        ? 'No orders found for "$_searchQuery"'
+                        : 'No orders yet',
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _isSearching
+                        ? 'Try a different name or order ID'
+                        : 'Your order history will appear here',
+                    style: TextStyle(color: Colors.grey[600]),
+                  ),
+                  if (_isSearching)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 16),
+                      child: ElevatedButton(
+                        onPressed: _clearSearch,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.white,
+                          foregroundColor: Colors.black,
+                        ),
+                        child: const Text('Clear Search'),
+                      ),
+                    ),
+                ],
+              ),
+            )
+                : RefreshIndicator(
+              onRefresh: _loadOrders,
+              color: Colors.white,
+              backgroundColor: Colors.black,
+              child: ListView.builder(
+                controller: _scrollController,
+                padding: const EdgeInsets.all(16),
+                itemCount: filteredOrders.length + (isLoadingMore ? 1 : 0),
+                itemBuilder: (context, index) {
+                  if (index == filteredOrders.length) {
+                    return const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(16),
+                        child: CircularProgressIndicator(color: Colors.white),
+                      ),
+                    );
+                  }
+                  return _buildOrderCard(filteredOrders[index], index);
+                },
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -460,7 +648,53 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                _buildInfoBox(Icons.access_time, 'Placed', createdAt),
+                // Customer name row
+                Row(
+                  children: [
+                    Expanded(
+                      child: _buildInfoBox(Icons.access_time, 'Placed', createdAt),
+                    ),
+                    if (order.containsKey('address_info') || order.containsKey('address_details')) ...[
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey[850],
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.grey[800]!),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.person, size: 20, color: Colors.grey[400]),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Customer',
+                                      style: TextStyle(fontSize: 10, color: Colors.grey[500]),
+                                    ),
+                                    Text(
+                                      _getCustomerName(order),
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.white,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
                 const SizedBox(height: 16),
                 SizedBox(
                   width: double.infinity,

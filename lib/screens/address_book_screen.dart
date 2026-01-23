@@ -91,6 +91,11 @@ class _AddressBookScreenState extends State<AddressBookScreen> {
   bool isLoading = true;
   String? selectedAddressId;
 
+  // Add these variables to your existing state variables
+  TextEditingController _searchController = TextEditingController();
+  List<Map<String, dynamic>> _filteredAddresses = [];
+  String _searchQuery = '';
+
 
 
   Future<Map<String, String>> _reverseGeocodeWeb(LatLng loc) async {
@@ -172,6 +177,7 @@ class _AddressBookScreenState extends State<AddressBookScreen> {
 
       setState(() {
         addresses = List<Map<String, dynamic>>.from(response);
+        _filteredAddresses = List<Map<String, dynamic>>.from(response); // Initialize filtered list
         isLoading = false;
       });
     } catch (e) {
@@ -188,6 +194,24 @@ class _AddressBookScreenState extends State<AddressBookScreen> {
         isLoading = false;
       });
     }
+  }
+
+  void _filterAddresses(String query) {
+    setState(() {
+      _searchQuery = query;
+
+      if (query.isEmpty) {
+        _filteredAddresses = List.from(addresses);
+      } else {
+        _filteredAddresses = addresses.where((address) {
+          final name = (address['recipient_name'] ?? '').toString().toLowerCase();
+          final phone = (address['phone_number'] ?? '').toString().toLowerCase();
+          final searchLower = query.toLowerCase();
+
+          return name.contains(searchLower) || phone.contains(searchLower);
+        }).toList();
+      }
+    });
   }
 
   Future<void> _setDefaultAddress(String addressId) async {
@@ -365,19 +389,36 @@ class _AddressBookScreenState extends State<AddressBookScreen> {
   }
 
   void _selectAddress(Map<String, dynamic> address) {
-    setState(() {
-      selectedAddressId = address['id'];
-    });
+    // Find the actual index in the filtered list
+    final index = _filteredAddresses.indexWhere((a) => a['id'] == address['id']);
+    if (index != -1) {
+      setState(() {
+        selectedAddressId = address['id'];
+      });
+    }
   }
 
   void _confirmSelection() {
     if (selectedAddressId != null) {
-      final selectedAddress = addresses.firstWhere(
+      final selectedAddress = _filteredAddresses.firstWhere(
             (address) => address['id'] == selectedAddressId,
+        orElse: () => addresses.firstWhere(
+              (address) => address['id'] == selectedAddressId,
+          orElse: () => {},
+        ),
       );
-      widget.onAddressSelected(selectedAddress);
-      Navigator.pop(context);
+
+      if (selectedAddress.isNotEmpty) {
+        widget.onAddressSelected(selectedAddress);
+        Navigator.pop(context);
+      }
     }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   @override
@@ -416,12 +457,21 @@ class _AddressBookScreenState extends State<AddressBookScreen> {
       ),
       body: isLoading
           ? const Center(child: CircularProgressIndicator())
-          : addresses.isEmpty
-          ? _buildEmptyState()
           : Column(
         children: [
-          Expanded(child: _buildAddressList()),
-          if (selectedAddressId != null) _buildSelectionFooter(),
+          // SEARCH BAR - Add this section
+          _buildSearchBar(),
+
+          // Conditional content
+          if (_filteredAddresses.isEmpty && _searchQuery.isNotEmpty)
+            _buildNoResultsState()
+          else if (_filteredAddresses.isEmpty)
+            Expanded(child: _buildEmptyState())
+          else
+            Expanded(child: _buildAddressList()),
+
+          if (selectedAddressId != null && _filteredAddresses.isNotEmpty)
+            _buildSelectionFooter(),
         ],
       ),
     );
@@ -472,12 +522,149 @@ class _AddressBookScreenState extends State<AddressBookScreen> {
     );
   }
 
+
+  Widget _buildSearchBar() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        border: Border(
+          bottom: BorderSide(color: Colors.grey.shade200, width: 1),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.shade100,
+            blurRadius: 2,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              decoration: BoxDecoration(
+                color: Colors.grey.shade50,
+                borderRadius: BorderRadius.circular(25),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              child: TextField(
+                controller: _searchController,
+                onChanged: _filterAddresses,
+                decoration: InputDecoration(
+                  hintText: 'Search by name or phone number...',
+                  hintStyle: TextStyle(
+                    color: Colors.grey.shade500,
+                    fontSize: 14,
+                  ),
+                  border: InputBorder.none,
+                  prefixIcon: Icon(
+                    Icons.search,
+                    color: Colors.grey.shade600,
+                    size: 22,
+                  ),
+                  suffixIcon: _searchQuery.isNotEmpty
+                      ? IconButton(
+                    icon: Icon(
+                      Icons.clear,
+                      color: Colors.grey.shade600,
+                      size: 20,
+                    ),
+                    onPressed: () {
+                      _searchController.clear();
+                      _filterAddresses('');
+                    },
+                  )
+                      : null,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                  isDense: true,
+                ),
+                style: const TextStyle(
+                  fontSize: 14,
+                  color: Colors.yellow,
+                ),
+              ),
+            ),
+          ),
+          if (_searchQuery.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Text(
+                '${_filteredAddresses.length} found',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade600,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+
+  Widget _buildNoResultsState() {
+    return Expanded(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.search_off,
+                size: 64,
+                color: Colors.grey.shade400,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'No addresses found',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'No addresses match "$_searchQuery"',
+                style: TextStyle(
+                  color: Colors.grey.shade500,
+                ),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton(
+                onPressed: () {
+                  _searchController.clear();
+                  _filterAddresses('');
+                },
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: kPrimaryColor,
+                  side: BorderSide(color: kPrimaryColor),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                child: const Text('Clear search'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildAddressList() {
     return ListView.builder(
       padding: const EdgeInsets.all(16),
-      itemCount: addresses.length,
+      itemCount: _filteredAddresses.length,
       itemBuilder: (context, index) {
-        final address = addresses[index];
+        final address = _filteredAddresses[index];
         return _buildAddressCard(address);
       },
     );
