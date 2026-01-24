@@ -958,8 +958,9 @@ class StoreOrderDetailsSheet extends StatelessWidget {
 
     if (order['pickup_date'] != null) {
       message += '\n⏰ *Pickup:* ${_formatDate(order['pickup_date'])}';
-      if (order['pickup_slot'] != null) {
-        message += ' • ${order['pickup_slot']['display_time']}\n';
+      final pickupTime = order['pickup_slot_display_time']?.toString();
+      if (pickupTime != null && pickupTime.isNotEmpty) {
+        message += ' • $pickupTime\n';
       } else {
         message += '\n';
       }
@@ -967,8 +968,9 @@ class StoreOrderDetailsSheet extends StatelessWidget {
 
     if (order['delivery_date'] != null) {
       message += '🚚 *Delivery:* ${_formatDate(order['delivery_date'])}';
-      if (order['delivery_slot'] != null) {
-        message += ' • ${order['delivery_slot']['display_time']}\n';
+      final deliveryTime = order['delivery_slot_display_time']?.toString();
+      if (deliveryTime != null && deliveryTime.isNotEmpty) {
+        message += ' • $deliveryTime\n';
       } else {
         message += '\n';
       }
@@ -2298,7 +2300,12 @@ Thank you! 🛍️
                               ],
                             ),
                             const SizedBox(height: 20),
-                          ],                      ],
+                          ],
+                          // Delivery Address Section
+                          if (address != null) ...[
+                            _buildDeliveryAddressSection(context, address),
+                            const SizedBox(height: 20),
+                          ],],
                       ),
                     ),
                   ),
