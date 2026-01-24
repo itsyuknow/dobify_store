@@ -239,6 +239,8 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     }
   }
 
+  // Replace your existing _showOrderDetails method with this updated version:
+
   Future<void> _showOrderDetails(Map<String, dynamic> order) async {
     final orderId = order['id'].toString();
 
@@ -256,22 +258,33 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     );
 
     try {
-      // Load full details
+      // Load full details with billing info
       final fullOrder = await supabase
           .from('orders')
           .select('''
-      *,
-      order_items!inner (
-        *,
-        products (id, product_name, image_url, product_price, category_id)
-      ),
-      order_billing_details (*)
-    ''')
+          *,
+          order_items!inner (
+            *,
+            products (id, product_name, image_url, product_price, category_id)
+          )
+        ''')
           .eq('id', orderId)
           .single();
 
+      // Fetch billing details separately
+      final billingResponse = await supabase
+          .from('order_billing_details')
+          .select('*')
+          .eq('order_id', orderId)
+          .maybeSingle();
+
       // Process and cache
       Map<String, dynamic> orderData = Map<String, dynamic>.from(fullOrder);
+
+      // Add billing details to order data
+      if (billingResponse != null) {
+        orderData['billing_details'] = billingResponse;
+      }
 
       if (fullOrder['order_items'] != null) {
         orderData['order_items'] = (fullOrder['order_items'] as List).map((item) {
@@ -287,12 +300,6 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
           }
           return processedItem;
         }).toList();
-      }
-
-      if (fullOrder['order_billing_details'] != null &&
-          fullOrder['order_billing_details'] is List &&
-          (fullOrder['order_billing_details'] as List).isNotEmpty) {
-        orderData['billing_details'] = (fullOrder['order_billing_details'] as List).first;
       }
 
       _detailsCache[orderId] = orderData;
@@ -984,6 +991,44 @@ class StoreOrderDetailsSheet extends StatelessWidget {
 
   Future<void> _sendWhatsApp(BuildContext context, Map<String, dynamic> order) async {
     try {
+      // Helper function to safely parse numbers
+      double _parseAmount(dynamic value) {
+        if (value == null) return 0.0;
+        if (value is num) return value.toDouble();
+        final parsed = double.tryParse(value.toString());
+        return parsed ?? 0.0;
+      }
+
+      // Get billing details from multiple possible sources
+      Map<String, dynamic>? billingDetails;
+      if (order['billing_details'] != null && order['billing_details'] is Map) {
+        billingDetails = Map<String, dynamic>.from(order['billing_details'] as Map);
+      } else if (order['order_billing_details'] != null &&
+          order['order_billing_details'] is List &&
+          (order['order_billing_details'] as List).isNotEmpty) {
+        billingDetails = Map<String, dynamic>.from((order['order_billing_details'] as List).first);
+      }
+
+      // If billing details are not in order, fetch them
+      if (billingDetails == null) {
+        try {
+          final SupabaseClient supabaseClient = Supabase.instance.client;
+          final orderId = order['id']?.toString() ?? '';
+
+          final billingResponse = await supabaseClient
+              .from('order_billing_details')
+              .select('*')
+              .eq('order_id', orderId)
+              .maybeSingle();
+
+          if (billingResponse != null) {
+            order['billing_details'] = billingResponse;
+          }
+        } catch (e) {
+          debugPrint('⚠️ Could not fetch billing details: $e');
+        }
+      }
+
       final address = order['address_info'] ?? order['address_details'];
       String phoneNumber = '';
 
@@ -1153,6 +1198,10 @@ Thank you for choosing Dobify.
     }
   }
 
+  // ==========================================
+// COMPLETE FIXED INVOICE PDF GENERATION
+// ==========================================
+
   Future<Uint8List> _buildInvoicePdfBytes(Map<String, dynamic> order) async {
     String _text(dynamic v) => (v == null || v.toString() == 'null') ? '' : v.toString();
     num _num(dynamic v) {
@@ -1180,7 +1229,31 @@ Thank you for choosing Dobify.
       logoImage = null;
     }
 
-    final billing = _map(order['billing_details']);
+    // 🆕 FIXED: Properly get billing details from multiple possible sources
+    Map<String, dynamic> billing = {};
+
+    if (order['billing_details'] != null && order['billing_details'] is Map) {
+      billing = _map(order['billing_details']);
+    } else if (order['order_billing_details'] != null &&
+        order['order_billing_details'] is List &&
+        (order['order_billing_details'] as List).isNotEmpty) {
+      billing = _map((order['order_billing_details'] as List).first);
+    }
+
+    // If billing is still empty, try to construct from order-level data
+    if (billing.isEmpty) {
+      billing = {
+        'subtotal': order['subtotal'] ?? 0,
+        'minimum_cart_fee': order['minimum_cart_fee'] ?? 0,
+        'platform_fee': order['platform_fee'] ?? 0,
+        'service_tax': order['service_tax'] ?? 0,
+        'delivery_fee': order['delivery_fee'] ?? 0,
+        'discount_amount': order['discount_amount'] ?? 0,
+        'total_amount': order['total_amount'] ?? 0,
+        'applied_coupon_code': order['applied_coupon_code'],
+      };
+    }
+
     final address = _map(order['address_info']).isNotEmpty
         ? _map(order['address_info'])
         : _map(order['address_details']);
@@ -1191,10 +1264,10 @@ Thank you for choosing Dobify.
 
     final double serviceTaxPercent = (_num(billing['service_tax_percent'])).toDouble() > 0
         ? (_num(billing['service_tax_percent'])).toDouble()
-        : 0.0; // Changed from 18.0 to 0.0
+        : 0.0;
     final double deliveryGstPercent = (_num(billing['delivery_gst_percent'])).toDouble() > 0
         ? (_num(billing['delivery_gst_percent'])).toDouble()
-        : 0.0; // Changed from 18.0 to 0.0
+        : 0.0;
 
     final double minCartBase = (_num(billing['minimum_cart_fee'])).toDouble();
     final double platformBase = (_num(billing['platform_fee'])).toDouble();
@@ -1208,8 +1281,10 @@ Thank you for choosing Dobify.
     final billedSubtotal = (_num(billing['subtotal'])).toDouble();
     if (billedSubtotal > 0) itemsBaseSubtotal = billedSubtotal;
 
+    // 🆕 FIXED: Properly get total amount - prefer billing total, fall back to order total
     final billedTotalOpt = (_num(billing['total_amount'])).toDouble();
-    final bool hasBilledTotal = billedTotalOpt > 0;
+    final orderTotal = (_num(order['total_amount'])).toDouble();
+    final actualTotal = billedTotalOpt > 0 ? billedTotalOpt : orderTotal;
 
     String _formatDate(String isoDate) {
       if (isoDate.isEmpty) return '';
@@ -1501,7 +1576,6 @@ Thank you for choosing Dobify.
                           : 0.0;
                       final taxableAfterDiscount = base - itemDiscount;
 
-                      // Calculate tax only if serviceTaxPercent > 0
                       final cg = serviceTaxPercent > 0 ? (taxableAfterDiscount * (serviceTaxPercent / 2) / 100.0) : 0.0;
                       final sg = serviceTaxPercent > 0 ? (taxableAfterDiscount * (serviceTaxPercent / 2) / 100.0) : 0.0;
                       final rowTotal = taxableAfterDiscount + cg + sg;
@@ -1627,6 +1701,7 @@ Thank you for choosing Dobify.
                         );
                       }()),
 
+                    // 🆕 FIXED: Use actualTotal instead of conditional
                     pw.TableRow(
                       decoration: pw.BoxDecoration(color: PdfColors.grey200),
                       children: [
@@ -1642,8 +1717,7 @@ Thank you for choosing Dobify.
                         buildCell(cgstSum.toStringAsFixed(2), bold: true),
                         buildCell('', bold: true),
                         buildCell(sgstSum.toStringAsFixed(2), bold: true),
-                        buildCell((hasBilledTotal ? billedTotalOpt : grandTotal).toStringAsFixed(2),
-                            bold: true),
+                        buildCell(actualTotal.toStringAsFixed(2), bold: true),
                       ],
                     ),
                   ],
@@ -1658,8 +1732,9 @@ Thank you for choosing Dobify.
                 pw.SizedBox(height: 4),
                 pw.Text('Amount in Words:',
                     style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold)),
+                // 🆕 FIXED: Use actualTotal instead of conditional
                 pw.Text(
-                  'Rupees ${_numberToWords(hasBilledTotal ? billedTotalOpt : grandTotal)} only',
+                  'Rupees ${_numberToWords(actualTotal)} only',
                   style: pw.TextStyle(fontSize: 9),
                 ),
 
@@ -1736,6 +1811,11 @@ Thank you for choosing Dobify.
     return await pdf.save();
   }
 
+// ==========================================
+// COMPLETE
+
+  // Replace your _sharePdfOnWhatsApp method with this fixed version:
+
   Future<void> _sharePdfOnWhatsApp(BuildContext context, Map<String, dynamic> order) async {
     showDialog(
       context: context,
@@ -1759,8 +1839,28 @@ Thank you for choosing Dobify.
 
     try {
       final SupabaseClient supabaseClient = Supabase.instance.client;
-      final Uint8List pdfBytes = await _buildInvoicePdfBytes(order);
       final orderId = order['id']?.toString() ?? 'unknown';
+
+      // 🆕 FETCH BILLING DETAILS if not already present
+      if (order['billing_details'] == null && order['order_billing_details'] == null) {
+        try {
+          final billingResponse = await supabaseClient
+              .from('order_billing_details')
+              .select('*')
+              .eq('order_id', orderId)
+              .maybeSingle();
+
+          if (billingResponse != null) {
+            order['billing_details'] = billingResponse;
+          }
+        } catch (e) {
+          debugPrint('⚠️ Could not fetch billing details: $e');
+          // Continue anyway - PDF will use order-level data as fallback
+        }
+      }
+
+      // Generate PDF bytes
+      final Uint8List pdfBytes = await _buildInvoicePdfBytes(order);
 
       // Get customer phone number
       final address = order['address_info'] ?? order['address_details'];
@@ -1783,10 +1883,9 @@ Thank you for choosing Dobify.
       String publicUrl = '';
 
       try {
-        // FIX: Use exact folder name "store_Invoices" (capital I)
+        // Upload to Supabase Storage
         final storagePath = 'store_Invoices/Invoice_$orderId.pdf';
 
-        // Upload with upsert to overwrite if exists
         await supabaseClient
             .storage
             .from('invoices')
@@ -1813,7 +1912,7 @@ Thank you for choosing Dobify.
 
         if (Navigator.canPop(context)) Navigator.of(context).pop();
 
-        // Fallback to local file
+        // Fallback to local file sharing
         final tempDir = await getTemporaryDirectory();
         final file = File('${tempDir.path}/Invoice_$orderId.pdf');
         await file.writeAsBytes(pdfBytes);
@@ -1951,22 +2050,47 @@ Thank you! 🛍️
     }
   }
 
-// 4. Method to build billing section
-  Widget _buildBillingSection(Map<String, dynamic> order) {
-    final billingDetails = order['billing_details'];
 
-    // Get values with proper null handling
-    final subtotal = double.tryParse(billingDetails?['subtotal']?.toString() ?? '0') ?? 0.0;
-    final minCartFee = double.tryParse(billingDetails?['minimum_cart_fee']?.toString() ?? '0') ?? 0.0;
-    final platformFee = double.tryParse(billingDetails?['platform_fee']?.toString() ?? '0') ?? 0.0;
-    final serviceTax = double.tryParse(billingDetails?['service_tax']?.toString() ?? '0') ?? 0.0;
-    final deliveryFee = double.tryParse(billingDetails?['delivery_fee']?.toString() ?? '0') ?? 0.0;
-    final expressDeliveryFee = double.tryParse(billingDetails?['express_delivery_fee']?.toString() ?? '0') ?? 0.0;
-    final standardDeliveryFee = double.tryParse(billingDetails?['standard_delivery_fee']?.toString() ?? '0') ?? 0.0;
-    final discountAmount = double.tryParse(billingDetails?['discount_amount']?.toString() ?? '0') ?? 0.0;
-    final totalAmount = double.tryParse(billingDetails?['total_amount']?.toString() ?? order['total_amount']?.toString() ?? '0') ?? 0.0;
-    final appliedCoupon = billingDetails?['applied_coupon_code']?.toString();
-    final deliveryType = billingDetails?['delivery_type']?.toString()?.toUpperCase();
+
+  Widget _buildBillingSection(Map<String, dynamic> order) {
+    // Helper function to safely parse numbers
+    double _parseAmount(dynamic value) {
+      if (value == null) return 0.0;
+      if (value is num) return value.toDouble();
+      final parsed = double.tryParse(value.toString());
+      return parsed ?? 0.0;
+    }
+
+    // Try to get billing details from different possible locations
+    Map<String, dynamic>? billingDetails;
+
+    if (order['billing_details'] != null) {
+      billingDetails = order['billing_details'] is Map
+          ? Map<String, dynamic>.from(order['billing_details'] as Map)
+          : null;
+    } else if (order['order_billing_details'] != null &&
+        order['order_billing_details'] is List &&
+        (order['order_billing_details'] as List).isNotEmpty) {
+      billingDetails = Map<String, dynamic>.from((order['order_billing_details'] as List).first);
+    }
+
+    // Get all values - try billing details first, then fall back to order level
+    final subtotal = _parseAmount(billingDetails?['subtotal'] ?? order['subtotal']);
+    final minCartFee = _parseAmount(billingDetails?['minimum_cart_fee'] ?? order['minimum_cart_fee']);
+    final platformFee = _parseAmount(billingDetails?['platform_fee'] ?? order['platform_fee']);
+    final serviceTax = _parseAmount(billingDetails?['service_tax'] ?? order['service_tax']);
+    final deliveryFee = _parseAmount(billingDetails?['delivery_fee'] ?? order['delivery_fee']);
+    final expressDeliveryFee = _parseAmount(billingDetails?['express_delivery_fee'] ?? order['express_delivery_fee']);
+    final standardDeliveryFee = _parseAmount(billingDetails?['standard_delivery_fee'] ?? order['standard_delivery_fee']);
+    final discountAmount = _parseAmount(billingDetails?['discount_amount'] ?? order['discount_amount']);
+
+    // Get total - prefer billing_details, then order
+    final totalAmount = _parseAmount(billingDetails?['total_amount']) > 0
+        ? _parseAmount(billingDetails?['total_amount'])
+        : _parseAmount(order['total_amount']);
+
+    final appliedCoupon = (billingDetails?['applied_coupon_code'] ?? order['applied_coupon_code'])?.toString();
+    final deliveryType = (billingDetails?['delivery_type'] ?? order['delivery_type'])?.toString()?.toUpperCase();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1976,46 +2100,48 @@ Thank you! 🛍️
         border: Border.all(color: Colors.grey[800]!),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Subtotal - ALWAYS SHOW
-          _buildBillRow('Subtotal', '₹${subtotal.toStringAsFixed(1)}'),
+          // Subtotal - Show only if > 0
+          if (subtotal > 0)
+            _buildBillRow('Subtotal', '₹${subtotal.toStringAsFixed(2)}'),
 
-          // Minimum Cart Fee - ONLY if > 0
+          // Minimum Cart Fee - Show only if > 0
           if (minCartFee > 0)
-            _buildBillRow('Minimum Cart Fee', '₹${minCartFee.toStringAsFixed(1)}'),
+            _buildBillRow('Minimum Cart Fee', '₹${minCartFee.toStringAsFixed(2)}'),
 
-          // Platform Fee - ONLY if > 0
+          // Platform Fee - Show only if > 0
           if (platformFee > 0)
-            _buildBillRow('Platform Fee', '₹${platformFee.toStringAsFixed(1)}'),
+            _buildBillRow('Platform Fee', '₹${platformFee.toStringAsFixed(2)}'),
 
-          // Service Tax - ONLY if > 0
+          // Service Tax - Show only if > 0
           if (serviceTax > 0)
-            _buildBillRow('Service Tax (GST)', '₹${serviceTax.toStringAsFixed(1)}'),
+            _buildBillRow('Service Tax (GST)', '₹${serviceTax.toStringAsFixed(2)}'),
 
-          // Delivery Fee - ONLY if > 0
+          // Delivery Fee - Show only if > 0
           if (deliveryFee > 0)
             _buildBillRow(
-              'Delivery Fee${deliveryType != null ? ' ($deliveryType)' : ''}',
-              '₹${deliveryFee.toStringAsFixed(1)}',
+              'Delivery Fee${deliveryType != null && deliveryType.isNotEmpty ? ' ($deliveryType)' : ''}',
+              '₹${deliveryFee.toStringAsFixed(2)}',
             ),
 
-          // Express Delivery Fee - ONLY if > 0
+          // Express Delivery Fee - Show only if > 0
           if (expressDeliveryFee > 0)
-            _buildBillRow('Express Delivery Fee', '₹${expressDeliveryFee.toStringAsFixed(1)}'),
+            _buildBillRow('Express Delivery Fee', '₹${expressDeliveryFee.toStringAsFixed(2)}'),
 
-          // Standard Delivery Fee - ONLY if > 0
+          // Standard Delivery Fee - Show only if > 0
           if (standardDeliveryFee > 0)
-            _buildBillRow('Standard Delivery Fee', '₹${standardDeliveryFee.toStringAsFixed(1)}'),
+            _buildBillRow('Standard Delivery Fee', '₹${standardDeliveryFee.toStringAsFixed(2)}'),
 
-          // Discount - ONLY if > 0
+          // Discount - Show only if > 0
           if (discountAmount > 0)
             _buildBillRow(
               'Discount',
-              '-₹${discountAmount.toStringAsFixed(1)}',
+              '-₹${discountAmount.toStringAsFixed(2)}',
               isDiscount: true,
             ),
 
-          // Coupon Applied - Show if exists
+          // Coupon Applied - Show if exists and not empty
           if (appliedCoupon != null && appliedCoupon.isNotEmpty) ...[
             const SizedBox(height: 8),
             Container(
@@ -2045,16 +2171,19 @@ Thank you! 🛍️
             const SizedBox(height: 4),
           ],
 
-          // Divider before total
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: Divider(height: 1, thickness: 1.5, color: Colors.grey[700]),
-          ),
+          // Divider before total - only show if we have at least one item above
+          if (subtotal > 0 || minCartFee > 0 || platformFee > 0 ||
+              serviceTax > 0 || deliveryFee > 0 || expressDeliveryFee > 0 ||
+              standardDeliveryFee > 0 || discountAmount > 0)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Divider(height: 1, thickness: 1.5, color: Colors.grey[700]),
+            ),
 
           // Total Amount - ALWAYS SHOW
           _buildBillRow(
             'Total Amount',
-            '₹${totalAmount.toStringAsFixed(1)}',
+            '₹${totalAmount.toStringAsFixed(2)}',
             isTotal: true,
           ),
 
