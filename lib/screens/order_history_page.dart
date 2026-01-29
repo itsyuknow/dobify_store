@@ -195,6 +195,8 @@ class _StoreOrderHistoryPageState extends State<StoreOrderHistoryPage> {
     }
   }
 
+
+
   void _onScroll() {
     if (_scrollController.position.pixels >=
         _scrollController.position.maxScrollExtent * 0.8) {
@@ -1198,11 +1200,22 @@ Thank you for choosing Dobify.
     }
   }
 
+  Future<Map<String, dynamic>> _fetchSettings() async {
+    final SupabaseClient supabaseClient = Supabase.instance.client;
+
+    final response = await supabaseClient
+        .from('billing_settings') // or whatever your settings table is called
+        .select()
+        .single();
+
+    return response;
+  }
+
   // ==========================================
 // COMPLETE FIXED INVOICE PDF GENERATION
 // ==========================================
 
-  Future<Uint8List> _buildInvoicePdfBytes(Map<String, dynamic> order) async {
+  Future<Uint8List> _buildInvoicePdfBytes(Map<String, dynamic> order, Map<String, dynamic> settings) async {
     String _text(dynamic v) => (v == null || v.toString() == 'null') ? '' : v.toString();
     num _num(dynamic v) {
       if (v == null) return 0;
@@ -1262,12 +1275,16 @@ Thank you for choosing Dobify.
     final orderId = _text(order['id'] ?? order['order_code']);
     final paymentMethod = _text(order['payment_method']).toUpperCase();
 
-    final double serviceTaxPercent = (_num(billing['service_tax_percent'])).toDouble() > 0
-        ? (_num(billing['service_tax_percent'])).toDouble()
-        : 0.0;
-    final double deliveryGstPercent = (_num(billing['delivery_gst_percent'])).toDouble() > 0
-        ? (_num(billing['delivery_gst_percent'])).toDouble()
-        : 0.0;
+    // Get tax percentages from settings table
+    final double serviceTaxPercent = (_num(settings['service_tax_percent'])).toDouble() > 0
+        ? (_num(settings['service_tax_percent'])).toDouble()
+        : 18.0;
+    final double deliveryGstPercent = (_num(settings['delivery_gst_percent'])).toDouble() > 0
+        ? (_num(settings['delivery_gst_percent'])).toDouble()
+        : 5.0;
+
+// Get total service tax amount from database (in rupees)
+    final double totalServiceTax = (_num(billing['service_tax'])).toDouble();
 
     final double minCartBase = (_num(billing['minimum_cart_fee'])).toDouble();
     final double platformBase = (_num(billing['platform_fee'])).toDouble();
@@ -1576,8 +1593,12 @@ Thank you for choosing Dobify.
                           : 0.0;
                       final taxableAfterDiscount = base - itemDiscount;
 
-                      final cg = serviceTaxPercent > 0 ? (taxableAfterDiscount * (serviceTaxPercent / 2) / 100.0) : 0.0;
-                      final sg = serviceTaxPercent > 0 ? (taxableAfterDiscount * (serviceTaxPercent / 2) / 100.0) : 0.0;
+                      // Calculate proportional tax from total service tax
+                      final itemTaxShare = totalServiceTax > 0 && itemsBaseSubtotal > 0
+                          ? (taxableAfterDiscount / (itemsBaseSubtotal - totalDiscount)) * totalServiceTax
+                          : 0.0;
+                      final cg = itemTaxShare / 2;
+                      final sg = itemTaxShare / 2;
                       final rowTotal = taxableAfterDiscount + cg + sg;
 
                       qtySum += qty;
@@ -1597,9 +1618,9 @@ Thank you for choosing Dobify.
                           buildCell('NOS'),
                           buildCell(itemDiscount.toStringAsFixed(2)),
                           buildCell(taxableAfterDiscount.toStringAsFixed(2)),
-                          buildCell(serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
+                          buildCell(totalServiceTax > 0 && serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
                           buildCell(cg.toStringAsFixed(2)),
-                          buildCell(serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
+                          buildCell(totalServiceTax > 0 && serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
                           buildCell(sg.toStringAsFixed(2)),
                           buildCell(rowTotal.toStringAsFixed(2)),
                         ],
@@ -1608,8 +1629,13 @@ Thank you for choosing Dobify.
 
                     if (platformBase > 0)
                       (() {
-                        final cg = serviceTaxPercent > 0 ? (platformBase * (serviceTaxPercent / 2) / 100.0) : 0.0;
-                        final sg = serviceTaxPercent > 0 ? (platformBase * (serviceTaxPercent / 2) / 100.0) : 0.0;
+                        // Platform fee gets proportional share of service tax
+                        final platformTaxableTotal = itemsBaseSubtotal + platformBase + minCartBase - totalDiscount;
+                        final platformTaxShare = totalServiceTax > 0 && platformTaxableTotal > 0
+                            ? (platformBase / platformTaxableTotal) * totalServiceTax
+                            : 0.0;
+                        final cg = platformTaxShare / 2;
+                        final sg = platformTaxShare / 2;
                         final total = platformBase + cg + sg;
 
                         taxableSum += platformBase;
@@ -1627,9 +1653,9 @@ Thank you for choosing Dobify.
                             buildCell('OTH'),
                             buildCell('0'),
                             buildCell(platformBase.toStringAsFixed(2)),
-                            buildCell(serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
+                            buildCell(totalServiceTax > 0 && serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
                             buildCell(cg.toStringAsFixed(2)),
-                            buildCell(serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
+                            buildCell(totalServiceTax > 0 && serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
                             buildCell(sg.toStringAsFixed(2)),
                             buildCell(total.toStringAsFixed(2)),
                           ],
@@ -1638,8 +1664,13 @@ Thank you for choosing Dobify.
 
                     if (minCartBase > 0)
                       (() {
-                        final cg = serviceTaxPercent > 0 ? (minCartBase * (serviceTaxPercent / 2) / 100.0) : 0.0;
-                        final sg = serviceTaxPercent > 0 ? (minCartBase * (serviceTaxPercent / 2) / 100.0) : 0.0;
+                        // Min cart fee gets proportional share of service tax
+                        final minCartTaxableTotal = itemsBaseSubtotal + platformBase + minCartBase - totalDiscount;
+                        final minCartTaxShare = totalServiceTax > 0 && minCartTaxableTotal > 0
+                            ? (minCartBase / minCartTaxableTotal) * totalServiceTax
+                            : 0.0;
+                        final cg = minCartTaxShare / 2;
+                        final sg = minCartTaxShare / 2;
                         final total = minCartBase + cg + sg;
 
                         taxableSum += minCartBase;
@@ -1658,9 +1689,9 @@ Thank you for choosing Dobify.
                             buildCell('OTH'),
                             buildCell('0'),
                             buildCell(minCartBase.toStringAsFixed(2)),
-                            buildCell(serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
+                            buildCell(totalServiceTax > 0 && serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
                             buildCell(cg.toStringAsFixed(2)),
-                            buildCell(serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
+                            buildCell(totalServiceTax > 0 && serviceTaxPercent > 0 ? '${(serviceTaxPercent / 2).toStringAsFixed(2)}%' : '0%'),
                             buildCell(sg.toStringAsFixed(2)),
                             buildCell(total.toStringAsFixed(2)),
                           ],
@@ -1860,7 +1891,8 @@ Thank you for choosing Dobify.
       }
 
       // Generate PDF bytes
-      final Uint8List pdfBytes = await _buildInvoicePdfBytes(order);
+      final settings = await _fetchSettings(); // or however you fetch your settings
+      final pdfBytes = await _buildInvoicePdfBytes(order, settings);
 
       // Get customer phone number
       final address = order['address_info'] ?? order['address_details'];
@@ -2844,4 +2876,6 @@ Thank you! 🛍️
       ),
     );
   }
+
+
 }
