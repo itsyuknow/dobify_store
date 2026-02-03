@@ -11,6 +11,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:url_launcher/url_launcher.dart';
 
 // ⬆️ put this near your imports, not inside a class
 const String _gmapsKey = 'AIzaSyDjxtVK1EXQuaYOc0-a0V5-Wb8xR-koHZ0';
@@ -411,6 +412,28 @@ class _AddressBookScreenState extends State<AddressBookScreen> {
       if (selectedAddress.isNotEmpty) {
         widget.onAddressSelected(selectedAddress);
         Navigator.pop(context);
+      }
+    }
+  }
+
+  void _openInGoogleMaps(double latitude, double longitude) async {
+    final url = 'https://www.google.com/maps/search/?api=1&query=$latitude,$longitude';
+
+    try {
+      final uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } else {
+        throw 'Could not launch $url';
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open Google Maps'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
@@ -868,28 +891,57 @@ class _AddressBookScreenState extends State<AddressBookScreen> {
                 ],
                 if (isSelected) ...[
                   const SizedBox(height: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.blue.shade50,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.blue.shade200),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.check_circle, color: Colors.blue, size: 16),
-                        const SizedBox(width: 6),
-                        const Text(
-                          'Selected',
-                          style: TextStyle(
-                            color: Colors.blue,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.blue.shade200),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.check_circle, color: Colors.blue, size: 16),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'Selected',
+                              style: TextStyle(
+                                color: Colors.blue,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (address['latitude'] != null && address['longitude'] != null)
+                        ElevatedButton.icon(
+                          onPressed: () => _openInGoogleMaps(
+                            address['latitude'],
+                            address['longitude'],
+                          ),
+                          icon: const Icon(Icons.navigation, size: 16, color: Colors.white),
+                          label: const Text(
+                            'Open GPS',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            elevation: 2,
                           ),
                         ),
-                      ],
-                    ),
+                    ],
                   ),
                 ],
               ],
