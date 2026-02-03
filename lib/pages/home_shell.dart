@@ -1,11 +1,13 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../screens/address_book_screen.dart';
 import '../theme.dart';
 import '../utils/globals.dart';
 import '../screens/orders_screen.dart';
 import 'order_history_page.dart';
 import '../screens/cart_screen.dart';
+
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key, required int initialIndex});
@@ -64,6 +66,31 @@ class _HomeShellState extends State<HomeShell> {
       appBar: AppBar(
         title: Text(_index == 0 ? 'Orders' : 'Order History'),
         actions: [
+          // Address Book icon
+          IconButton(
+            tooltip: 'Address Book',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => AddressBookScreen(
+                    onAddressSelected: (selectedAddress) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          backgroundColor: DobifyColors.black,
+                          content: Text(
+                            'Selected: ${selectedAddress['address_line_1']}',
+                            style: const TextStyle(color: DobifyColors.yellow),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(Icons.contacts, color: DobifyColors.yellow),
+          ),
           // ALWAYS show cart icon (site-like)
           Padding(
             padding: const EdgeInsets.only(right: 8),
