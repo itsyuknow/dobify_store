@@ -1276,10 +1276,10 @@ Thank you for choosing Dobify.
     final paymentMethod = _text(order['payment_method']).toUpperCase();
 
     // Get tax percentages from settings table
-    final double serviceTaxPercent = (_num(settings['service_tax_percent'])).toDouble() > 0
+    final double serviceTaxPercent = settings['service_tax_percent'] != null
         ? (_num(settings['service_tax_percent'])).toDouble()
         : 18.0;
-    final double deliveryGstPercent = (_num(settings['delivery_gst_percent'])).toDouble() > 0
+    final double deliveryGstPercent = settings['delivery_gst_percent'] != null
         ? (_num(settings['delivery_gst_percent'])).toDouble()
         : 5.0;
 
